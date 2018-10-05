@@ -140,8 +140,13 @@ public:
     }
 };
 
-static const Amount COIN(100000000);
-static const Amount CENT(1000000);
+/** Amount in satoshis (Can be negative) */
+typedef int64_t CAmount;
+
+static constexpr Amount SATOSHI = Amount::satoshi();
+static constexpr Amount CASH = 100 * SATOSHI;
+static constexpr Amount COIN = 100000000 * SATOSHI;
+static constexpr Amount CENT = COIN / 100;
 
 extern const std::string CURRENCY_UNIT;
 

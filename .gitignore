@@ -98,3 +98,8 @@ contrib/devtools/split-debug.sh
 
 # vagrant
 .vagrant
+
+# bitprim
+.vscode
+test/functional/config.ini
+
