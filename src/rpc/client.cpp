@@ -111,6 +111,15 @@ static const CRPCConvertParam vRPCConvertParams[] = {
     {"setnetworkactive", 0, "state"},
     {"getmempoolancestors", 1, "verbose"},
     {"getmempooldescendants", 1, "verbose"},
+    { "getblockhashes", 0 , "high"},
+    { "getblockhashes", 1, "low"},
+    { "getblockhashes", 2, "options" },
+    { "getspentinfo", 0, "txid_index"},
+    { "getaddresstxids", 0, "addresses"},
+    { "getaddressbalance", 0, "addresses"},
+    { "getaddressdeltas", 0, "addresses"},
+    { "getaddressutxos", 0, "addresses"},
+    { "getaddressmempool", 0, "addresses"},
     {"disconnectnode", 1, "nodeid"},
     // Echo with conversion (For testing only)
     {"echojson", 0, "arg0"},
@@ -123,6 +132,8 @@ static const CRPCConvertParam vRPCConvertParams[] = {
     {"echojson", 7, "arg7"},
     {"echojson", 8, "arg8"},
     {"echojson", 9, "arg9"},
+    {"rescanblockchain", 0, "start_height"},
+    {"rescanblockchain", 1, "stop_height"},
 };
 
 class CRPCConvertTable {

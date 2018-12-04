@@ -63,6 +63,107 @@ void ScriptPubKeyToJSON(const Config &config, const CScript &scriptPubKey,
     out.push_back(Pair("addresses", a));
 }
 
+//TODO pass config param (?)
+void TxToJSONExpanded(const Config &config, const CTransaction& tx, const uint256 hashBlock, UniValue& entry,
+                      int nHeight = 0, int nConfirmations = 0, int nBlockTime = 0)
+{
+
+    uint256 txid = tx.GetHash();
+    entry.push_back(Pair("txid", txid.GetHex()));
+    //Witness was removed
+    //entry.push_back(Pair("hash", tx.GetWitnessHash().GetHex()));
+    entry.push_back(Pair("hash", tx.GetHash().GetHex()));
+    entry.push_back(Pair("size", (int)::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION)));
+    //Witness was removed
+    //entry.push_back(Pair("vsize", (int)::GetVirtualTransactionSize(tx)));
+    entry.push_back(Pair("vsize", (int)::GetSerializeSize(tx, SER_NETWORK, PROTOCOL_VERSION)));
+    entry.push_back(Pair("version", tx.nVersion));
+    entry.push_back(Pair("locktime", (int64_t)tx.nLockTime));
+    UniValue vin(UniValue::VARR);
+    for (unsigned int i = 0; i < tx.vin.size(); i++) {
+        const CTxIn& txin = tx.vin[i];
+        UniValue in(UniValue::VOBJ);
+        if (tx.IsCoinBase())
+            in.push_back(Pair("coinbase", HexStr(txin.scriptSig.begin(), txin.scriptSig.end())));
+        else {
+            in.push_back(Pair("txid", txin.prevout.GetTxId().GetHex()));
+            in.push_back(Pair("vout", (int64_t)txin.prevout.GetN()));
+            UniValue o(UniValue::VOBJ);
+            o.push_back(Pair("asm", ScriptToAsmStr(txin.scriptSig, true)));
+            o.push_back(Pair("hex", HexStr(txin.scriptSig.begin(), txin.scriptSig.end())));
+            in.push_back(Pair("scriptSig", o));
+
+            // Add address and value info if spentindex enabled
+            CSpentIndexValue spentInfo;
+            CSpentIndexKey spentKey(txin.prevout.GetTxId(), txin.prevout.GetN());
+            if (GetSpentIndex(spentKey, spentInfo)) {
+                in.push_back(Pair("value", ValueFromCAmount(spentInfo.satoshis)));
+                in.push_back(Pair("valueSat", spentInfo.satoshis));
+                if (spentInfo.addressType == 1) {
+                    in.push_back(Pair("address", CBitcoinAddress(CKeyID(spentInfo.addressHash)).ToString()));
+                } else if (spentInfo.addressType == 2)  {
+                    in.push_back(Pair("address", CBitcoinAddress(CScriptID(spentInfo.addressHash)).ToString()));
+                }
+            }
+
+        }
+        //Witness was removed
+        /*
+        if (tx.HasWitness()) {
+            if (!tx.vin[i].scriptWitness.IsNull()) {
+                UniValue txinwitness(UniValue::VARR);
+                for (unsigned int j = 0; j < tx.vin[i].scriptWitness.stack.size(); j++) {
+                    std::vector<unsigned char> item = tx.vin[i].scriptWitness.stack[j];
+                    txinwitness.push_back(HexStr(item.begin(), item.end()));
+                }
+                in.push_back(Pair("txinwitness", txinwitness));
+            }
+
+        }*/
+        in.push_back(Pair("sequence", (int64_t)txin.nSequence));
+        vin.push_back(in);
+    }
+    entry.push_back(Pair("vin", vin));
+    UniValue vout(UniValue::VARR);
+    for (unsigned int i = 0; i < tx.vout.size(); i++) {
+        const CTxOut& txout = tx.vout[i];
+        UniValue out(UniValue::VOBJ);
+        out.push_back(Pair("value", ValueFromAmount(txout.nValue)));
+        out.push_back(Pair("valueSat", txout.nValue / SATOSHI));
+        out.push_back(Pair("n", (int64_t)i));
+        UniValue o(UniValue::VOBJ);
+        ScriptPubKeyToJSON(config, txout.scriptPubKey, o, true);
+        out.push_back(Pair("scriptPubKey", o));
+
+        // Add spent information if spentindex is enabled
+        CSpentIndexValue spentInfo;
+        CSpentIndexKey spentKey(txid, i);
+        if (GetSpentIndex(spentKey, spentInfo)) {
+            out.push_back(Pair("spentTxId", spentInfo.txid.GetHex()));
+            out.push_back(Pair("spentIndex", (int)spentInfo.inputIndex));
+            out.push_back(Pair("spentHeight", spentInfo.blockHeight));
+        }
+
+        vout.push_back(out);
+    }
+    entry.push_back(Pair("vout", vout));
+
+    if (!hashBlock.IsNull()) {
+        entry.push_back(Pair("blockhash", hashBlock.GetHex()));
+
+        if (nConfirmations > 0) {
+            entry.push_back(Pair("height", nHeight));
+            entry.push_back(Pair("confirmations", nConfirmations));
+            entry.push_back(Pair("time", nBlockTime));
+            entry.push_back(Pair("blocktime", nBlockTime));
+        } else {
+            entry.push_back(Pair("height", -1));
+            entry.push_back(Pair("confirmations", 0));
+        }
+    }
+
+}
+
 void TxToJSON(const Config &config, const CTransaction &tx,
               const uint256 hashBlock, UniValue &entry) {
     entry.push_back(Pair("txid", tx.GetId().GetHex()));
@@ -99,6 +200,7 @@ void TxToJSON(const Config &config, const CTransaction &tx,
         const CTxOut &txout = tx.vout[i];
         UniValue out(UniValue::VOBJ);
         out.push_back(Pair("value", ValueFromAmount(txout.nValue)));
+        out.push_back(Pair("valueSat", txout.nValue / SATOSHI));
         out.push_back(Pair("n", (int64_t)i));
         UniValue o(UniValue::VOBJ);
         ScriptPubKeyToJSON(config, txout.scriptPubKey, o, true);
@@ -114,12 +216,13 @@ void TxToJSON(const Config &config, const CTransaction &tx,
         if (mi != mapBlockIndex.end() && (*mi).second) {
             CBlockIndex *pindex = (*mi).second;
             if (chainActive.Contains(pindex)) {
-                entry.push_back(
-                    Pair("confirmations",
-                         1 + chainActive.Height() - pindex->nHeight));
+                entry.push_back(Pair("height", pindex->nHeight));
+                entry.push_back(Pair("confirmations", 1 + chainActive.Height() -
+                                                          pindex->nHeight));
                 entry.push_back(Pair("time", pindex->GetBlockTime()));
                 entry.push_back(Pair("blocktime", pindex->GetBlockTime()));
             } else {
+                entry.push_back(Pair("height", -1));
                 entry.push_back(Pair("confirmations", 0));
             }
         }
@@ -212,8 +315,9 @@ static UniValue getrawtransaction(const Config &config,
             HelpExampleRpc("getrawtransaction", "\"mytxid\", true"));
     }
 
-    LOCK(cs_main);
+    // uint256 hash = ParseHashV(request.params[0], "parameter 1");
 
+    LOCK(cs_main);
     TxId txid = TxId(ParseHashV(request.params[0], "parameter 1"));
 
     // Accept either a bool (true) or a num (>=1) to indicate verbose output.
@@ -235,15 +339,38 @@ static UniValue getrawtransaction(const Config &config,
     }
 
     CTransactionRef tx;
+
     uint256 hashBlock;
+
+    int nHeight = 0;
+    int nConfirmations = 0;
+    int nBlockTime = 0;
+
+    
+    // LOCK(cs_main); // TODO: is this necessary because lock in 320
     if (!GetTransaction(config, txid, tx, hashBlock, true)) {
         throw JSONRPCError(
-            RPC_INVALID_ADDRESS_OR_KEY,
-            std::string(fTxIndex ? "No such mempool or blockchain transaction"
-                                 : "No such mempool transaction. Use -txindex "
-                                   "to enable blockchain transaction queries") +
-                ". Use gettransaction for wallet transactions.");
+        RPC_INVALID_ADDRESS_OR_KEY,
+        std::string(fTxIndex ? "No such mempool or blockchain transaction"
+                                : "No such mempool transaction. Use -txindex "
+                                "to enable blockchain transaction queries") +
+            ". Use gettransaction for wallet transactions.");
     }
+
+    BlockMap::iterator mi = mapBlockIndex.find(hashBlock);
+    if (mi != mapBlockIndex.end() && (*mi).second) {
+        CBlockIndex* pindex = (*mi).second;
+        if (chainActive.Contains(pindex)) {
+            nHeight = pindex->nHeight;
+            nConfirmations = 1 + chainActive.Height() - pindex->nHeight;
+            nBlockTime = pindex->GetBlockTime();
+        } else {
+            nHeight = -1;
+            nConfirmations = 0;
+            nBlockTime = pindex->GetBlockTime();
+        }
+    }
+    
 
     std::string strHex = EncodeHexTx(*tx, RPCSerializationFlags());
 
@@ -253,7 +380,7 @@ static UniValue getrawtransaction(const Config &config,
 
     UniValue result(UniValue::VOBJ);
     result.push_back(Pair("hex", strHex));
-    TxToJSON(config, *tx, hashBlock, result);
+    TxToJSONExpanded(config, *tx, hashBlock, result, nHeight, nConfirmations, nBlockTime);
     return result;
 }
 
@@ -506,9 +633,14 @@ static UniValue createrawtransaction(const Config &config,
         uint256 txid = ParseHashO(o, "txid");
 
         const UniValue &vout_v = find_value(o, "vout");
-        if (!vout_v.isNum()) {
+        if (vout_v.isNull()) {
             throw JSONRPCError(RPC_INVALID_PARAMETER,
                                "Invalid parameter, missing vout key");
+        }
+
+        if (!vout_v.isNum()) {
+            throw JSONRPCError(RPC_INVALID_PARAMETER,
+                               "Invalid parameter, vout must be a number");
         }
 
         int nOutput = vout_v.get_int();
@@ -545,7 +677,7 @@ static UniValue createrawtransaction(const Config &config,
             std::vector<uint8_t> data =
                 ParseHexV(sendTo[name_].getValStr(), "Data");
 
-            CTxOut out(Amount(0), CScript() << OP_RETURN << data);
+            CTxOut out(Amount::zero(), CScript() << OP_RETURN << data);
             rawTx.vout.push_back(out);
         } else {
             CTxDestination destination =
@@ -942,7 +1074,7 @@ static UniValue signrawtransaction(const Config &config,
 
                 CTxOut txout;
                 txout.scriptPubKey = scriptPubKey;
-                txout.nValue = Amount(0);
+                txout.nValue = Amount::zero();
                 if (prevOut.exists("amount")) {
                     txout.nValue =
                         AmountFromValue(find_value(prevOut, "amount"));
@@ -1126,7 +1258,7 @@ static UniValue sendrawtransaction(const Config &config,
     bool fLimitFree = false;
     Amount nMaxRawTxFee = maxTxFee;
     if (request.params.size() > 1 && request.params[1].get_bool()) {
-        nMaxRawTxFee = Amount(0);
+        nMaxRawTxFee = Amount::zero();
     }
 
     CCoinsViewCache &view = *pcoinsTip;
@@ -1174,7 +1306,7 @@ static UniValue sendrawtransaction(const Config &config,
 }
 
 // clang-format off
-static const CRPCCommand commands[] = {
+static const ContextFreeRPCCommand commands[] = {
     //  category            name                      actor (function)        okSafeMode
     //  ------------------- ------------------------  ----------------------  ----------
     { "rawtransactions",    "getrawtransaction",      getrawtransaction,      true,  {"txid","verbose"} },

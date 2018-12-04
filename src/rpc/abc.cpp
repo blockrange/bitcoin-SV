@@ -20,7 +20,6 @@ static UniValue getexcessiveblock(const Config &config,
             "\nReturn the excessive block size."
             "\nResult\n"
             "  excessiveBlockSize (integer) block size in bytes\n"
-            "  overridden (boolean) true if the block size is overriden from the default\n"
             "\nExamples:\n" +
             HelpExampleCli("getexcessiveblock", "") +
             HelpExampleRpc("getexcessiveblock", ""));
@@ -28,7 +27,6 @@ static UniValue getexcessiveblock(const Config &config,
 
     UniValue ret(UniValue::VOBJ);
     ret.push_back(Pair("excessiveBlockSize", config.GetMaxBlockSize()));
-    ret.push_back(Pair("overridden", config.MaxBlockSizeOverridden()));
     return ret;
 }
 
@@ -38,7 +36,7 @@ static UniValue setexcessiveblock(Config &config,
         throw std::runtime_error(
             "setexcessiveblock blockSize\n"
             "\nSet the excessive block size. Excessive blocks will not be used "
-            "in the active chain or relayed. This discourages the propagation "
+            "in the active chain or relayed. This  discourages the propagation "
             "of blocks that you consider excessively large."
             "\nResult\n"
             "  blockSize (integer) excessive block size in bytes\n"
@@ -76,7 +74,7 @@ static UniValue setexcessiveblock(Config &config,
 }
 
 // clang-format off
-static const CRPCCommand commands[] = {
+static const ContextFreeRPCCommand commands[] = {
     //  category            name                      actor (function)        okSafeMode
     //  ------------------- ------------------------  ----------------------  ----------
     { "network",            "getexcessiveblock",      getexcessiveblock,      true, {}},
@@ -84,8 +82,8 @@ static const CRPCCommand commands[] = {
 };
 // clang-format on
 
-void RegisterABCRPCCommands(CRPCTable &tableRPC) {
+void RegisterABCRPCCommands(CRPCTable &t) {
     for (unsigned int vcidx = 0; vcidx < ARRAYLEN(commands); vcidx++) {
-        tableRPC.appendCommand(commands[vcidx].name, &commands[vcidx]);
+        t.appendCommand(commands[vcidx].name, &commands[vcidx]);
     }
 }

@@ -6,6 +6,7 @@
 #include "rpc/blockchain.h"
 
 #include "amount.h"
+#include "base58.h"
 #include "chain.h"
 #include "chainparams.h"
 #include "checkpoints.h"
@@ -16,6 +17,10 @@
 #include "policy/policy.h"
 #include "primitives/transaction.h"
 #include "rpc/server.h"
+#include "script/script.h"
+#include "script/script_error.h"
+#include "script/sign.h"
+#include "script/standard.h"
 #include "rpc/tojson.h"
 #include "streams.h"
 #include "sync.h"
@@ -96,6 +101,112 @@ UniValue blockheaderToJSON(const CBlockIndex *blockindex) {
     if (pnext) {
         result.push_back(Pair("nextblockhash", pnext->GetBlockHash().GetHex()));
     }
+    return result;
+}
+//TODO pass config param (?)
+UniValue blockToDeltasJSON(const CBlock& block, const CBlockIndex* blockindex)
+{
+    UniValue result(UniValue::VOBJ);
+    result.push_back(Pair("hash", block.GetHash().GetHex()));
+    int confirmations = -1;
+    // Only report confirmations if the block is on the main chain
+    if (chainActive.Contains(blockindex)) {
+        confirmations = chainActive.Height() - blockindex->nHeight + 1;
+    } else {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block is an orphan");
+    }
+    result.push_back(Pair("confirmations", confirmations));
+    result.push_back(Pair("size", (int)::GetSerializeSize(block, SER_NETWORK, PROTOCOL_VERSION)));
+    result.push_back(Pair("height", blockindex->nHeight));
+    result.push_back(Pair("version", block.nVersion));
+    result.push_back(Pair("merkleroot", block.hashMerkleRoot.GetHex()));
+
+    UniValue deltas(UniValue::VARR);
+
+    for (unsigned int i = 0; i < block.vtx.size(); i++) {
+        const CTransaction &tx = *(block.vtx[i]);
+        const uint256 txhash = tx.GetHash();
+
+        UniValue entry(UniValue::VOBJ);
+        entry.push_back(Pair("txid", txhash.GetHex()));
+        entry.push_back(Pair("index", (int)i));
+
+        UniValue inputs(UniValue::VARR);
+
+        if (!tx.IsCoinBase()) {
+
+            for (size_t j = 0; j < tx.vin.size(); j++) {
+                const CTxIn input = tx.vin[j];
+
+                UniValue delta(UniValue::VOBJ);
+
+                CSpentIndexValue spentInfo;
+                CSpentIndexKey spentKey(input.prevout.GetTxId(), input.prevout.GetN());
+
+                if (GetSpentIndex(spentKey, spentInfo)) {
+                    if (spentInfo.addressType == 1) {
+                        delta.push_back(Pair("address", CBitcoinAddress(CKeyID(spentInfo.addressHash)).ToString()));
+                    } else if (spentInfo.addressType == 2)  {
+                        delta.push_back(Pair("address", CBitcoinAddress(CScriptID(spentInfo.addressHash)).ToString()));
+                    } else {
+                        continue;
+                    }
+                    delta.push_back(Pair("satoshis", -1 * spentInfo.satoshis));
+                    delta.push_back(Pair("index", (int)j));
+                    delta.push_back(Pair("prevtxid", input.prevout.GetTxId().GetHex()));
+                    delta.push_back(Pair("prevout", (int)input.prevout.GetN()));
+
+                    inputs.push_back(delta);
+                } else {
+                    throw JSONRPCError(RPC_INTERNAL_ERROR, "Spent information not available");
+                }
+
+            }
+        }
+
+        entry.push_back(Pair("inputs", inputs));
+
+        UniValue outputs(UniValue::VARR);
+
+        for (unsigned int k = 0; k < tx.vout.size(); k++) {
+            const CTxOut &out = tx.vout[k];
+
+            UniValue delta(UniValue::VOBJ);
+
+            if (out.scriptPubKey.IsPayToScriptHash()) {
+                std::vector<unsigned char> hashBytes(out.scriptPubKey.begin()+2, out.scriptPubKey.begin()+22);
+                delta.push_back(Pair("address", CBitcoinAddress(CScriptID(uint160(hashBytes))).ToString()));
+
+            } else if (out.scriptPubKey.IsPayToPublicKeyHash()) {
+                std::vector<unsigned char> hashBytes(out.scriptPubKey.begin()+3, out.scriptPubKey.begin()+23);
+                delta.push_back(Pair("address", CBitcoinAddress(CKeyID(uint160(hashBytes))).ToString()));
+            } else {
+                continue;
+            }
+
+            delta.push_back(Pair("satoshis", out.nValue / SATOSHI));
+            delta.push_back(Pair("index", (int)k));
+
+            outputs.push_back(delta);
+        }
+
+        entry.push_back(Pair("outputs", outputs));
+        deltas.push_back(entry);
+
+    }
+    result.push_back(Pair("deltas", deltas));
+    result.push_back(Pair("time", block.GetBlockTime()));
+    result.push_back(Pair("mediantime", (int64_t)blockindex->GetMedianTimePast()));
+    result.push_back(Pair("nonce", (uint64_t)block.nNonce));
+    result.push_back(Pair("bits", strprintf("%08x", block.nBits)));
+    result.push_back(Pair("difficulty", GetDifficulty(blockindex)));
+    result.push_back(Pair("chainwork", blockindex->nChainWork.GetHex()));
+
+    if (blockindex->pprev)
+        result.push_back(Pair("previousblockhash", blockindex->pprev->GetBlockHash().GetHex()));
+    CBlockIndex *pnext = chainActive.Next(blockindex);
+    if (pnext)
+        result.push_back(Pair("nextblockhash", pnext->GetBlockHash().GetHex()));
     return result;
 }
 
@@ -411,11 +522,10 @@ void entryToJSON(UniValue &info, const CTxMemPoolEntry &e) {
     info.push_back(Pair("descendantcount", e.GetCountWithDescendants()));
     info.push_back(Pair("descendantsize", e.GetSizeWithDescendants()));
     info.push_back(
-        Pair("descendantfees", e.GetModFeesWithDescendants().GetSatoshis()));
+        Pair("descendantfees", e.GetModFeesWithDescendants() / SATOSHI));
     info.push_back(Pair("ancestorcount", e.GetCountWithAncestors()));
     info.push_back(Pair("ancestorsize", e.GetSizeWithAncestors()));
-    info.push_back(
-        Pair("ancestorfees", e.GetModFeesWithAncestors().GetSatoshis()));
+    info.push_back(Pair("ancestorfees", e.GetModFeesWithAncestors() / SATOSHI));
     const CTransaction &tx = e.GetTx();
     std::set<std::string> setDepends;
     for (const CTxIn &txin : tx.vin) {
@@ -655,6 +765,102 @@ UniValue getmempoolentry(const Config &config, const JSONRPCRequest &request) {
     return info;
 }
 
+UniValue getblockdeltas(const Config &config, const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() != 1)
+        throw std::runtime_error("");
+
+    std::string strHash = request.params[0].get_str();
+    uint256 hash(uint256S(strHash));
+
+    if (mapBlockIndex.count(hash) == 0)
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Block not found");
+
+    CBlock block;
+    CBlockIndex* pblockindex = mapBlockIndex[hash];
+
+    if (fHavePruned && !(pblockindex->nStatus.hasData()) && pblockindex->nTx > 0)
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Block not available (pruned data)");
+
+    if(!ReadBlockFromDisk(block, pblockindex, config))
+        throw JSONRPCError(RPC_INTERNAL_ERROR, "Can't read block from disk");
+
+    return blockToDeltasJSON(block, pblockindex);
+}
+
+UniValue getblockhashes(const Config &config, const JSONRPCRequest& request)
+{
+    if (request.fHelp || request.params.size() < 2)
+        throw std::runtime_error(
+            "getblockhashes timestamp\n"
+            "\nReturns array of hashes of blocks within the timestamp range provided.\n"
+            "\nArguments:\n"
+            "1. high         (numeric, required) The newer block timestamp\n"
+            "2. low          (numeric, required) The older block timestamp\n"
+            "3. options      (string, required) A json object\n"
+            "    {\n"
+            "      \"noOrphans\":true   (boolean) will only include blocks on the main chain\n"
+            "      \"logicalTimes\":true   (boolean) will include logical timestamps with hashes\n"
+            "    }\n"
+            "\nResult:\n"
+            "[\n"
+            "  \"hash\"         (string) The block hash\n"
+            "]\n"
+            "[\n"
+            "  {\n"
+            "    \"blockhash\": (string) The block hash\n"
+            "    \"logicalts\": (numeric) The logical timestamp\n"
+            "  }\n"
+            "]\n"
+            "\nExamples:\n"
+            + HelpExampleCli("getblockhashes", "1231614698 1231024505")
+            + HelpExampleRpc("getblockhashes", "1231614698, 1231024505")
+            + HelpExampleCli("getblockhashes", "1231614698 1231024505 '{\"noOrphans\":false, \"logicalTimes\":true}'")
+            );
+
+    unsigned int high = request.params[0].get_int();
+    unsigned int low = request.params[1].get_int();
+    bool fActiveOnly = false;
+    bool fLogicalTS = false;
+
+    if (request.params.size() > 2) {
+        if (request.params[2].isObject()) {
+            UniValue noOrphans = find_value(request.params[2].get_obj(), "noOrphans");
+            UniValue returnLogical = find_value(request.params[2].get_obj(), "logicalTimes");
+
+            if (noOrphans.isBool())
+                fActiveOnly = noOrphans.get_bool();
+
+            if (returnLogical.isBool())
+                fLogicalTS = returnLogical.get_bool();
+        }
+    }
+
+    std::vector<std::pair<uint256, unsigned int> > blockHashes;
+
+    if (fActiveOnly)
+        LOCK(cs_main);
+
+    if (!GetTimestampIndex(high, low, fActiveOnly, blockHashes)) {
+        throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "No information available for block hashes");
+    }
+
+    UniValue result(UniValue::VARR);
+
+    for (std::vector<std::pair<uint256, unsigned int> >::const_iterator it=blockHashes.begin(); it!=blockHashes.end(); it++) {
+        if (fLogicalTS) {
+            UniValue item(UniValue::VOBJ);
+            item.push_back(Pair("blockhash", it->first.GetHex()));
+            item.push_back(Pair("logicalts", (int)it->second));
+            result.push_back(item);
+        } else {
+            result.push_back(it->first.GetHex());
+        }
+    }
+
+    return result;
+}
+
 UniValue getblockhash(const Config &config, const JSONRPCRequest &request) {
     if (request.fHelp || request.params.size() != 1) {
         throw std::runtime_error(
@@ -862,7 +1068,7 @@ struct CCoinsStats {
 
     CCoinsStats()
         : nHeight(0), nTransactions(0), nTransactionOutputs(0), nBogoSize(0),
-          nDiskSize(0), nTotalAmount(0) {}
+          nDiskSize(0), nTotalAmount() {}
 };
 
 static void ApplyStats(CCoinsStats &stats, CHashWriter &ss, const uint256 &hash,
@@ -875,7 +1081,7 @@ static void ApplyStats(CCoinsStats &stats, CHashWriter &ss, const uint256 &hash,
     for (const auto output : outputs) {
         ss << VARINT(output.first + 1);
         ss << output.second.GetTxOut().scriptPubKey;
-        ss << VARINT(output.second.GetTxOut().nValue.GetSatoshis());
+        ss << VARINT(output.second.GetTxOut().nValue / SATOSHI);
         stats.nTransactionOutputs++;
         stats.nTotalAmount += output.second.GetTxOut().nValue;
         stats.nBogoSize +=
@@ -1169,6 +1375,9 @@ static UniValue SoftForkMajorityDesc(int version, CBlockIndex *pindex,
         case 4:
             activated = pindex->nHeight >= consensusParams.BIP65Height;
             break;
+        case 5:
+            activated = pindex->nHeight >= consensusParams.CSVHeight;
+            break;
     }
     rv.push_back(Pair("status", activated));
     return rv;
@@ -1183,52 +1392,6 @@ static UniValue SoftForkDesc(const std::string &name, int version,
     rv.push_back(
         Pair("reject", SoftForkMajorityDesc(version, pindex, consensusParams)));
     return rv;
-}
-
-static UniValue BIP9SoftForkDesc(const Consensus::Params &consensusParams,
-                                 Consensus::DeploymentPos id) {
-    UniValue rv(UniValue::VOBJ);
-    const ThresholdState thresholdState =
-        VersionBitsTipState(consensusParams, id);
-    switch (thresholdState) {
-        case THRESHOLD_DEFINED:
-            rv.push_back(Pair("status", "defined"));
-            break;
-        case THRESHOLD_STARTED:
-            rv.push_back(Pair("status", "started"));
-            break;
-        case THRESHOLD_LOCKED_IN:
-            rv.push_back(Pair("status", "locked_in"));
-            break;
-        case THRESHOLD_ACTIVE:
-            rv.push_back(Pair("status", "active"));
-            break;
-        case THRESHOLD_FAILED:
-            rv.push_back(Pair("status", "failed"));
-            break;
-    }
-    if (THRESHOLD_STARTED == thresholdState) {
-        rv.push_back(Pair("bit", consensusParams.vDeployments[id].bit));
-    }
-    rv.push_back(
-        Pair("startTime", consensusParams.vDeployments[id].nStartTime));
-    rv.push_back(Pair("timeout", consensusParams.vDeployments[id].nTimeout));
-    rv.push_back(
-        Pair("since", VersionBitsTipStateSinceHeight(consensusParams, id)));
-    return rv;
-}
-
-void BIP9SoftForkDescPushBack(UniValue &bip9_softforks, const std::string &name,
-                              const Consensus::Params &consensusParams,
-                              Consensus::DeploymentPos id) {
-    // Deployments with timeout value of 0 are hidden.
-    // A timeout value of 0 guarantees a softfork will never be activated.
-    // This is used when softfork codes are merged without specifying the
-    // deployment schedule.
-    if (consensusParams.vDeployments[id].nTimeout > 0) {
-        bip9_softforks.push_back(
-            Pair(name, BIP9SoftForkDesc(consensusParams, id)));
-    }
 }
 
 UniValue getblockchaininfo(const Config &config,
@@ -1270,24 +1433,7 @@ UniValue getblockchaininfo(const Config &config,
             "reached\n"
             "        },\n"
             "     }, ...\n"
-            "  ],\n"
-            "  \"bip9_softforks\": {          (object) status of BIP9 "
-            "softforks in progress\n"
-            "     \"xxxx\" : {                (string) name of the softfork\n"
-            "        \"status\": \"xxxx\",    (string) one of \"defined\", "
-            "\"started\", \"locked_in\", \"active\", \"failed\"\n"
-            "        \"bit\": xx,             (numeric) the bit (0-28) in the "
-            "block version field used to signal this softfork (only for "
-            "\"started\" status)\n"
-            "        \"startTime\": xx,       (numeric) the minimum median "
-            "time past of a block at which the bit gains its meaning\n"
-            "        \"timeout\": xx,         (numeric) the median time past "
-            "of a block at which the deployment is considered failed if not "
-            "yet locked in\n"
-            "        \"since\": xx            (numeric) height of the first "
-            "block to which the status applies\n"
-            "     }\n"
-            "  }\n"
+            "  ]\n"
             "}\n"
             "\nExamples:\n" +
             HelpExampleCli("getblockchaininfo", "") +
@@ -1317,14 +1463,11 @@ UniValue getblockchaininfo(const Config &config,
         config.GetChainParams().GetConsensus();
     CBlockIndex *tip = chainActive.Tip();
     UniValue softforks(UniValue::VARR);
-    UniValue bip9_softforks(UniValue::VOBJ);
     softforks.push_back(SoftForkDesc("bip34", 2, tip, consensusParams));
     softforks.push_back(SoftForkDesc("bip66", 3, tip, consensusParams));
     softforks.push_back(SoftForkDesc("bip65", 4, tip, consensusParams));
-    BIP9SoftForkDescPushBack(bip9_softforks, "csv", consensusParams,
-                             Consensus::DEPLOYMENT_CSV);
+    softforks.push_back(SoftForkDesc("csv", 5, tip, consensusParams));
     obj.push_back(Pair("softforks", softforks));
-    obj.push_back(Pair("bip9_softforks", bip9_softforks));
 
     if (fPruneMode) {
         CBlockIndex *block = chainActive.Tip();
@@ -1726,7 +1869,7 @@ UniValue getchaintxstats(const Config &config, const JSONRPCRequest &request) {
 }
 
 // clang-format off
-static const CRPCCommand commands[] = {
+static const ContextFreeRPCCommand commands[] = {
     //  category            name                      actor (function)        okSafe argNames
     //  ------------------- ------------------------  ----------------------  ------ ----------
     { "blockchain",         "getblockchaininfo",      getblockchaininfo,      true,  {} },
@@ -1734,6 +1877,8 @@ static const CRPCCommand commands[] = {
     { "blockchain",         "getbestblockhash",       getbestblockhash,       true,  {} },
     { "blockchain",         "getblockcount",          getblockcount,          true,  {} },
     { "blockchain",         "getblock",               getblock,               true,  {"blockhash","verbose"} },
+    { "blockchain",         "getblockdeltas",         getblockdeltas,         false, {} },
+    { "blockchain",         "getblockhashes",         getblockhashes,         true,  {}  },
     { "blockchain",         "getblockhash",           getblockhash,           true,  {"height"} },
     { "blockchain",         "getblockheader",         getblockheader,         true,  {"blockhash","verbose"} },
     { "blockchain",         "getchaintips",           getchaintips,           true,  {} },
