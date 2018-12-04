@@ -245,7 +245,6 @@ extern std::vector<uint8_t> ParseHexO(const UniValue &o, std::string strKey);
 
 extern Amount AmountFromValue(const UniValue &value);
 // extern UniValue ValueFromAmount(const Amount &amount);
-extern UniValue ValueFromCAmount(const CAmount &amount);
 extern std::string HelpRequiringPassphrase();
 extern UniValue ValueFromAmount(const Amount amount);
 extern std::string HelpExampleCli(const std::string &methodname,
