@@ -297,7 +297,7 @@ void OnRPCStopped() {
     LogPrint(BCLog::RPC, "RPC stopped.\n");
 }
 
-void OnRPCPreCommand(const CRPCCommand &cmd) {
+void OnRPCPreCommand(const ContextFreeRPCCommand &cmd) {
     // Observe safe mode.
     std::string strWarning = GetWarnings("rpc");
     if (strWarning != "" &&
@@ -1116,9 +1116,9 @@ bool InitSanityCheck(void) {
 }
 
 static bool AppInitServers(Config &config, boost::thread_group &threadGroup) {
-    RPCServer::OnStarted(&OnRPCStarted);
-    RPCServer::OnStopped(&OnRPCStopped);
-    RPCServer::OnPreCommand(&OnRPCPreCommand);
+    RPCServerSignals::OnStarted(&OnRPCStarted);
+    RPCServerSignals::OnStopped(&OnRPCStopped);
+    RPCServerSignals::OnPreCommand(&OnRPCPreCommand);
     if (!InitHTTPServer(config)) return false;
     if (!StartRPC()) return false;
     if (!StartHTTPRPC()) return false;

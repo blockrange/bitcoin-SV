@@ -1327,7 +1327,7 @@ UniValue importmulti(const Config &config, const JSONRPCRequest &mainRequest) {
 }
 
 // clang-format off
-static const CRPCCommand commands[] = {
+static const ContextFreeRPCCommand commands[] = {
     //  category            name                        actor (function)          okSafeMode
     //  ------------------- ------------------------    ----------------------    ----------
     { "wallet",             "dumpprivkey",              dumpprivkey,              true,   {"address"}  },
